@@ -1,7 +1,12 @@
 import { Injectable } from "@angular/core";
-import { BalanceEntryResponse, PostEntryResponse, User } from "./backend-api.service";
-import { Router, ActivatedRoute } from "@angular/router";
-import { BackendApiService } from "./backend-api.service";
+import {
+  BackendApiService,
+  BalanceEntryResponse,
+  PostEntryResponse,
+  TutorialStatus,
+  User,
+} from "./backend-api.service";
+import { ActivatedRoute, Router } from "@angular/router";
 import { RouteNames } from "./app-routing.module";
 import ConfettiGenerator from "confetti-js";
 import { Observable, Observer } from "rxjs";
@@ -18,6 +23,8 @@ import { RightBarCreatorsLeaderboardComponent } from "./right-bar-creators/right
 import { HttpClient } from "@angular/common/http";
 import { FeedComponent } from "./feed/feed.component";
 import { BsModalRef, BsModalService } from "ngx-bootstrap/modal";
+import Swal from "sweetalert2";
+import Timer = NodeJS.Timer;
 
 export enum ConfettiSvg {
   DIAMOND = "diamond",
@@ -52,7 +59,7 @@ export class GlobalVarsService {
     private httpClient: HttpClient
   ) {}
 
-  static MAX_POST_LENGTH = 280;
+  static MAX_POST_LENGTH = 560;
 
   static FOUNDER_REWARD_BASIS_POINTS_WARNING_THRESHOLD = 50 * 100;
 
@@ -64,6 +71,9 @@ export class GlobalVarsService {
 
   // We're waiting for the user to grant storage access (full-screen takeover)
   requestingStorageAccess = false;
+
+  // Track if the user is dragging the diamond selector. If so, need to disable text selection in the app.
+  userIsDragging = false;
 
   RouteNames = RouteNames;
 
@@ -98,9 +108,12 @@ export class GlobalVarsService {
   loggedInUser: User;
   userList: User[] = [];
 
+  // Temporarily track tutorial status here until backend it flowing
+  TutorialStatus: TutorialStatus;
+
   // map[pubkey]->bool of globomods
   globoMods: any;
-  feeRateBitCloutPerKB = 0.0;
+  feeRateBitCloutPerKB = 1000 / 1e9;
   postsToShow = [];
   followFeedPosts = [];
   messageResponse = null;
@@ -149,6 +162,9 @@ export class GlobalVarsService {
   // Whether or not to show the Buy BitClout with USD flow.
   showBuyWithUSD = false;
 
+  // Whether or not to show the Jumio verification flow.
+  showJumio = false;
+
   // Whether or not this node comps profile creation.
   isCompProfileCreation = false;
 
@@ -184,6 +200,8 @@ export class GlobalVarsService {
 
   // Timestamp of last profile update
   profileUpdateTimestamp: number;
+
+  jumioBitCloutNanos = 0;
 
   SetupMessages() {
     // If there's no loggedInUser, we set the notification count to zero
@@ -271,12 +289,23 @@ export class GlobalVarsService {
     });
   }
 
+  userInTutorial(user: User): boolean {
+    return (
+      user && [TutorialStatus.COMPLETE, TutorialStatus.EMPTY, TutorialStatus.SKIPPED].indexOf(user?.TutorialStatus) < 0
+    );
+  }
+
   // NEVER change loggedInUser property directly. Use this method instead.
   setLoggedInUser(user: User) {
     const isSameUserAsBefore =
       this.loggedInUser && user && this.loggedInUser.PublicKeyBase58Check === user.PublicKeyBase58Check;
 
     this.loggedInUser = user;
+
+    // If Jumio callback hasn't returned yet, we need to poll to update the user metadata.
+    if (user && user?.JumioFinishedTime > 0 && !user?.JumioReturned) {
+      this.pollLoggedInUserForJumio(user.PublicKeyBase58Check);
+    }
 
     if (!isSameUserAsBefore) {
       // Store the user in localStorage
@@ -296,7 +325,42 @@ export class GlobalVarsService {
       this.followFeedPosts = [];
     }
 
+    if (this.loggedInUser?.MustCompleteTutorial && this.loggedInUser?.TutorialStatus === TutorialStatus.EMPTY) {
+      this.startTutorialAlert();
+    }
+
     this._notifyLoggedInUserObservers(user, isSameUserAsBefore);
+    if (this.userInTutorial(user)) {
+      // drop user at correct point in tutorial.
+      let route = [];
+      switch (user.TutorialStatus) {
+        case TutorialStatus.STARTED: {
+          route = [RouteNames.TUTORIAL, RouteNames.INVEST, RouteNames.BUY_CREATOR];
+          break;
+        }
+        case TutorialStatus.INVEST_OTHERS_BUY: {
+          route = [RouteNames.TUTORIAL, RouteNames.WALLET, user.CreatorPurchasedInTutorialUsername];
+          break;
+        }
+        case TutorialStatus.INVEST_OTHERS_SELL: {
+          route = [RouteNames.TUTORIAL, RouteNames.WALLET, user.CreatorPurchasedInTutorialUsername];
+          break;
+        }
+        case TutorialStatus.CREATE_PROFILE: {
+          route = [RouteNames.TUTORIAL, RouteNames.INVEST, RouteNames.BUY_CREATOR];
+          break;
+        }
+        case TutorialStatus.INVEST_SELF: {
+          route = [RouteNames.TUTORIAL, RouteNames.WALLET, user.ProfileEntryResponse?.Username];
+          break;
+        }
+        case TutorialStatus.DIAMOND: {
+          route = [RouteNames.TUTORIAL + "/" + RouteNames.CREATE_POST];
+          break;
+        }
+      }
+      this.router.navigate(route);
+    }
   }
 
   hasUserBlockedCreator(publicKeyBase58Check): boolean {
@@ -319,7 +383,7 @@ export class GlobalVarsService {
     const bitcloutNanos = this.diamondLevelMap[index];
     const val = this.nanosToUSDNumber(bitcloutNanos);
     if (val < 1) {
-      return this.formatUSD(val, 2);
+      return this.formatUSD(Math.max(val, 0.01), 2);
     }
     return this.abbreviateNumber(val, 0, true);
   }
@@ -370,6 +434,7 @@ export class GlobalVarsService {
       style: "currency",
       currency: "USD",
       minimumFractionDigits: decimal,
+      maximumFractionDigits: decimal,
     });
     return this.formatUSDMemo[num][decimal];
   }
@@ -610,24 +675,27 @@ export class GlobalVarsService {
     });
   }
 
-  _alertError(err: any, showBuyBitClout: boolean = false) {
+  _alertError(err: any, showBuyBitClout: boolean = false, showBuyCreatorCoin: boolean = false) {
     SwalHelper.fire({
       target: this.getTargetComponentSelector(),
       icon: "error",
       title: `Oops...`,
       html: err,
       showConfirmButton: true,
-      showCancelButton: showBuyBitClout,
+      showCancelButton: showBuyBitClout || showBuyCreatorCoin,
       focusConfirm: true,
       customClass: {
         confirmButton: "btn btn-light",
         cancelButton: "btn btn-light no",
       },
-      confirmButtonText: showBuyBitClout ? "Buy BitClout" : "Ok",
+      confirmButtonText: showBuyBitClout ? "Buy BitClout" : showBuyCreatorCoin ? "Buy Creator Coin" : "Ok",
       reverseButtons: true,
     }).then((res) => {
       if (showBuyBitClout && res.isConfirmed) {
         this.router.navigate([RouteNames.BUY_BITCLOUT], { queryParamsHandling: "merge" });
+      }
+      if (showBuyCreatorCoin && res.isConfirmed) {
+        this.router.navigate([RouteNames.CREATORS]);
       }
     });
   }
@@ -713,30 +781,41 @@ export class GlobalVarsService {
     if (!this.amplitude) {
       return;
     }
-
+    // If the user is in the tutorial, add the "tutorial : " prefix.
+    if (this.userInTutorial(this.loggedInUser)) {
+      event = "tutorial : " + event;
+    }
     this.amplitude.logEvent(event, data);
   }
 
-  launchLoginFlow() {
-    this.logEvent("account : login : launch");
+  // Helper to launch the get free clout flow in identity.
+  launchGetFreeCLOUTFlow() {
+    this.logEvent("identity : jumio : launch");
+    this.identityService
+      .launch(`/get-free-clout?public_key=${this.loggedInUser?.PublicKeyBase58Check}`)
+      .subscribe(() => {
+        this.logEvent("identity : jumio : success");
+        this.updateEverything();
+      });
+  }
+
+  launchIdentityFlow(event: string): void {
+    this.logEvent(`account : ${event} : launch`);
     this.identityService.launch("/log-in").subscribe((res) => {
-      this.logEvent("account : login : success");
+      this.logEvent(`account : ${event} : success`);
       this.backendApi.setIdentityServiceUsers(res.users, res.publicKeyAdded);
-      this.updateEverything().subscribe(() => {
+      this.updateEverything().add(() => {
         this.flowRedirect(res.signedUp);
       });
     });
   }
 
+  launchLoginFlow() {
+    this.launchIdentityFlow("login");
+  }
+
   launchSignupFlow() {
-    this.logEvent("account : create : launch");
-    this.identityService.launch("/log-in").subscribe((res) => {
-      this.logEvent("account : create : success");
-      this.backendApi.setIdentityServiceUsers(res.users, res.publicKeyAdded);
-      this.updateEverything().subscribe(() => {
-        this.flowRedirect(res.signedUp);
-      });
-    });
+    this.launchIdentityFlow("create");
   }
 
   flowRedirect(signedUp: boolean): void {
@@ -906,5 +985,123 @@ export class GlobalVarsService {
   resendVerifyEmail() {
     this.backendApi.ResendVerifyEmail(this.localNode, this.loggedInUser.PublicKeyBase58Check).subscribe();
     this.resentVerifyEmail = true;
+  }
+
+  startTutorialAlert(): void {
+    Swal.fire({
+      target: this.getTargetComponentSelector(),
+      title: "Congrats!",
+      html: "You just got some free money!<br><br><b>Now it's time to learn how to earn even more!</b>",
+      showConfirmButton: true,
+      // Only show skip option to admins
+      showCancelButton: !!this.loggedInUser?.IsAdmin,
+      customClass: {
+        confirmButton: "btn btn-light",
+        cancelButton: "btn btn-light no",
+      },
+      reverseButtons: true,
+      confirmButtonText: "Start Tutorial",
+      cancelButtonText: "Skip",
+      // User must skip or start tutorial
+      allowOutsideClick: false,
+      allowEscapeKey: false,
+    }).then((res) => {
+      this.backendApi
+        .StartOrSkipTutorial(
+          this.localNode,
+          this.loggedInUser?.PublicKeyBase58Check,
+          !res.isConfirmed /* if it's not confirmed, skip tutorial*/
+        )
+        .subscribe((response) => {
+          this.logEvent(`tutorial : ${res.isConfirmed ? "start" : "skip"}`);
+          // Auto update logged in user's tutorial status - we don't need to fetch it via get users stateless right now.
+          this.loggedInUser.TutorialStatus = res.isConfirmed ? TutorialStatus.STARTED : TutorialStatus.SKIPPED;
+          if (res.isConfirmed) {
+            this.router.navigate([RouteNames.TUTORIAL, RouteNames.INVEST, RouteNames.BUY_CREATOR]);
+          }
+        });
+    });
+  }
+
+  skipTutorial(): void {
+    Swal.fire({
+      target: this.getTargetComponentSelector(),
+      icon: "warning",
+      title: "Skip Tutorial?",
+      html: "Are you sure?",
+      showConfirmButton: true,
+      customClass: {
+        confirmButton: "btn btn-light",
+      },
+      reverseButtons: true,
+      confirmButtonText: "Skip",
+    }).then((res) => {
+      if (res.isConfirmed) {
+        this.backendApi.StartOrSkipTutorial(this.localNode, this.loggedInUser?.PublicKeyBase58Check, true).subscribe(
+          (response) => {
+            this.logEvent(`tutorial : skip`);
+            // Auto update logged in user's tutorial status - we don't need to fetch it via get users stateless right now.
+            this.loggedInUser.TutorialStatus = TutorialStatus.SKIPPED;
+            this.router.navigate([RouteNames.BROWSE]);
+          },
+          (err) => {
+            this._alertError(err.error.error);
+          }
+        );
+      }
+    });
+  }
+
+  jumioInterval: Timer = null;
+  // If we return from the Jumio flow, poll for up to 10 minutes to see if we need to update the user's balance.
+  pollLoggedInUserForJumio(publicKey: string): void {
+    if (this.jumioInterval) {
+      clearInterval(this.jumioInterval);
+    }
+    let attempts = 0;
+    let numTries = 120;
+    let timeoutMillis = 5000;
+    this.jumioInterval = setInterval(() => {
+      if (attempts >= numTries) {
+        clearInterval(this.jumioInterval);
+        return;
+      }
+      this.backendApi
+        .GetJumioStatusForPublicKey(environment.jumioEndpointHostname, publicKey)
+        .subscribe(
+          (res: any) => {
+            if (res.JumioVerified) {
+              let user: User;
+              this.userList.forEach((userInList, idx) => {
+                if (userInList.PublicKeyBase58Check === publicKey) {
+                  this.userList[idx].JumioVerified = res.JumioVerified;
+                  this.userList[idx].JumioReturned = res.JumioReturned;
+                  this.userList[idx].JumioFinishedTime = res.JumioFinishedTime;
+                  this.userList[idx].BalanceNanos = res.BalanceNanos;
+                  this.userList[idx].MustCompleteTutorial = true;
+                  user = this.userList[idx];
+                }
+              });
+              if (user) {
+                this.setLoggedInUser(user);
+              }
+              this.celebrate();
+              if (user.TutorialStatus === TutorialStatus.EMPTY) {
+                this.startTutorialAlert();
+              }
+              clearInterval(this.jumioInterval);
+              return;
+            }
+            // If the user wasn't verified by jumio, but Jumio did return a callback, stop polling.
+            if (res.JumioReturned) {
+              clearInterval(this.jumioInterval);
+            }
+          },
+          (error) => {
+            clearInterval(this.jumioInterval);
+          }
+        )
+        .add(() => attempts++);
+    }, timeoutMillis);
   }
 }

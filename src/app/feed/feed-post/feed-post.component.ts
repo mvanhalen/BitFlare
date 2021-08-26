@@ -106,16 +106,21 @@ export class FeedPostComponent implements OnInit {
   // If the post is shown in a modal, this is used to hide the modal on post click.
   @Input() containerModalRef: any = null;
 
+  @Input() inTutorial: boolean = false;
+
   // emits the PostEntryResponse
   @Output() postDeleted = new EventEmitter();
 
   // emits the UserBlocked event
   @Output() userBlocked = new EventEmitter();
 
+  // emits the nftBidPLaced event
+  @Output() nftBidPlaced = new EventEmitter();
+
+  // emits diamondSent event
+  @Output() diamondSent = new EventEmitter();
+
   AppRoutingModule = AppRoutingModule;
-  stakeAmount = 1;
-  loggedInUserStakeAmount = 0;
-  loggedInUserNextStakePayout = -1;
   addingPostToGlobalFeed = false;
   reclout: any;
   postContent: any;
@@ -142,67 +147,70 @@ export class FeedPostComponent implements OnInit {
   mOfNNFTTooltip =
     "Each NFT can have multiple editions, each of which has its own unique serial number. This shows how many editions are currently on sale and how many there are in total. Generally, editions with lower serial numbers are more valuable.";
 
+  getNFTEntries() {
+    this.backendApi
+      .GetNFTEntriesForNFTPost(
+        this.globalVars.localNode,
+        this.globalVars.loggedInUser?.PublicKeyBase58Check,
+        this.postContent.PostHashHex
+      )
+      .subscribe((res) => {
+        this.nftEntryResponses = res.NFTEntryResponses;
+        this.nftEntryResponses.sort((a, b) => a.SerialNumber - b.SerialNumber);
+        this.decryptableNFTEntryResponses = this.nftEntryResponses.filter(
+          (sn) =>
+            sn.OwnerPublicKeyBase58Check === this.globalVars.loggedInUser?.PublicKeyBase58Check &&
+            sn.EncryptedUnlockableText &&
+            sn.LastOwnerPublicKeyBase58Check
+        );
+        if (this.decryptableNFTEntryResponses.length) {
+          this.backendApi
+            .DecryptUnlockableTexts(
+              this.globalVars.loggedInUser?.PublicKeyBase58Check,
+              this.decryptableNFTEntryResponses
+            )
+            .subscribe((res) => (this.decryptableNFTEntryResponses = res));
+        }
+        this.availableSerialNumbers = this.nftEntryResponses.filter((nftEntryResponse) => nftEntryResponse.IsForSale);
+        const profileSerialNumbers = this.nftEntryResponses.filter(
+          (serialNumber) =>
+            serialNumber.OwnerPublicKeyBase58Check === this.profilePublicKeyBase58Check &&
+            (!this.isForSaleOnly || serialNumber.IsForSale)
+        );
+        this.serialNumbersDisplay =
+          profileSerialNumbers
+            .map((serialNumber) => `#${serialNumber.SerialNumber}`)
+            .slice(0, 5)
+            .join(", ") + (profileSerialNumbers.length > 5 ? "..." : "");
+        this.mySerialNumbersNotForSale = this.nftEntryResponses.filter(
+          (nftEntryResponse) =>
+            !nftEntryResponse.IsForSale &&
+            nftEntryResponse.OwnerPublicKeyBase58Check === this.globalVars.loggedInUser?.PublicKeyBase58Check
+        );
+        this.myAvailableSerialNumbers = this.availableSerialNumbers.filter(
+          (nftEntryResponse) =>
+            nftEntryResponse.OwnerPublicKeyBase58Check === this.globalVars.loggedInUser?.PublicKeyBase58Check
+        );
+        this.showPlaceABid = !!(this.availableSerialNumbers.length - this.myAvailableSerialNumbers.length);
+        this.highBid = _.maxBy(this.availableSerialNumbers, "HighestBidAmountNanos")?.HighestBidAmountNanos || 0;
+        this.lowBid = _.minBy(this.availableSerialNumbers, "HighestBidAmountNanos")?.HighestBidAmountNanos || 0;
+      });
+  }
+
   ngOnInit() {
-    if (this.globalVars.loggedInUser) {
-      this.loggedInUserStakeAmount = this._getLoggedInUserStakeAmount();
-      this.loggedInUserNextStakePayout = this._getLoggedInUserNextStakePayout();
-    }
     if (!this.post.RecloutCount) {
       this.post.RecloutCount = 0;
     }
     this.setEmbedURLForPostContent();
-    if (this.postContent.IsNFT && !this.nftEntryResponses?.length) {
-      this.backendApi
-        .GetNFTEntriesForNFTPost(
-          this.globalVars.localNode,
-          this.globalVars.loggedInUser?.PublicKeyBase58Check,
-          this.postContent.PostHashHex
-        )
-        .subscribe((res) => {
-          this.nftEntryResponses = res.NFTEntryResponses;
-          this.nftEntryResponses.sort((a, b) => a.SerialNumber - b.SerialNumber);
-          this.decryptableNFTEntryResponses = this.nftEntryResponses.filter(
-            (sn) =>
-              sn.OwnerPublicKeyBase58Check === this.globalVars.loggedInUser?.PublicKeyBase58Check &&
-              sn.EncryptedUnlockableText &&
-              sn.LastOwnerPublicKeyBase58Check
-          );
-          if (this.decryptableNFTEntryResponses.length) {
-            this.backendApi
-              .DecryptUnlockableTexts(
-                this.globalVars.loggedInUser?.PublicKeyBase58Check,
-                this.decryptableNFTEntryResponses
-              )
-              .subscribe((res) => (this.decryptableNFTEntryResponses = res));
-          }
-          this.availableSerialNumbers = this.nftEntryResponses.filter((nftEntryResponse) => nftEntryResponse.IsForSale);
-          const profileSerialNumbers = this.nftEntryResponses.filter(
-            (serialNumber) =>
-              serialNumber.OwnerPublicKeyBase58Check === this.profilePublicKeyBase58Check &&
-              (!this.isForSaleOnly || serialNumber.IsForSale)
-          );
-          this.serialNumbersDisplay =
-            profileSerialNumbers
-              .map((serialNumber) => `#${serialNumber.SerialNumber}`)
-              .slice(0, 5)
-              .join(", ") + (profileSerialNumbers.length > 5 ? "..." : "");
-          this.mySerialNumbersNotForSale = this.nftEntryResponses.filter(
-            (nftEntryResponse) =>
-              !nftEntryResponse.IsForSale &&
-              nftEntryResponse.OwnerPublicKeyBase58Check === this.globalVars.loggedInUser?.PublicKeyBase58Check
-          );
-          this.myAvailableSerialNumbers = this.availableSerialNumbers.filter(
-            (nftEntryResponse) =>
-              nftEntryResponse.OwnerPublicKeyBase58Check === this.globalVars.loggedInUser?.PublicKeyBase58Check
-          );
-          this.showPlaceABid = !!(this.availableSerialNumbers.length - this.myAvailableSerialNumbers.length);
-          this.highBid = _.maxBy(this.availableSerialNumbers, "HighestBidAmountNanos")?.HighestBidAmountNanos || 0;
-          this.lowBid = _.minBy(this.availableSerialNumbers, "HighestBidAmountNanos")?.HighestBidAmountNanos || 0;
-        });
+    if (this.showNFTDetails && this.postContent.IsNFT && !this.nftEntryResponses?.length) {
+      this.getNFTEntries();
     }
   }
 
   onPostClicked(event) {
+    if (this.inTutorial) {
+      return;
+    }
     if (this.containerModalRef !== null) {
       this.containerModalRef.hide();
     }
@@ -424,48 +432,6 @@ export class FeedPostComponent implements OnInit {
     }
   }
 
-  _getLoggedInUserStakeAmount() {
-    if (this.post.StakeEntry.StakeList.length === 0) {
-      return 0;
-    }
-    let totalStake = 0;
-    for (let ii = 0; ii < this.post.StakeEntry.StakeList.length; ii++) {
-      if (
-        this.post.StakeEntry.StakeList[ii].StakerPublicKeyBase58Check ==
-        this.globalVars.loggedInUser.PublicKeyBase58Check
-      ) {
-        totalStake += this.post.StakeEntry.StakeList[ii].InitialStakeNanos;
-      }
-    }
-    return totalStake / 1e9;
-  }
-
-  // Returns -1 if the user is not expecting another payout.
-  _getLoggedInUserNextStakePayout() {
-    if (this.post.StakeEntry.StakeList.length == 0) {
-      return -1;
-    }
-    // Start with the current amount staked.
-    let payoutStakeAmount = this.post.StakeEntryStats.TotalStakeNanos;
-
-    const loggedInUserPK = this.globalVars.loggedInUser.PublicKeyBase58Check;
-    for (let ii = 0; ii < this.post.StakeEntry.StakeList.length; ii++) {
-      const stakerPK = this.post.StakeEntry.StakeList[ii].StakerPublicKeyBase58Check;
-
-      // If we find a stake that isn't the current user, add the remaining stake owed.
-      if (stakerPK != loggedInUserPK && this.post.StakeEntry.StakeList[ii].RemainingStakeOwedNanos > 0) {
-        payoutStakeAmount += this.post.StakeEntry.StakeList[ii].RemainingStakeOwedNanos;
-      }
-
-      // If we find a stake that *is* the current user and is unpaid, we are at the payoutStakeAmount and can return.
-      else if (stakerPK == loggedInUserPK && this.post.StakeEntry.StakeList[ii].RemainingStakeOwedNanos > 0) {
-        return payoutStakeAmount / 1e9;
-      }
-    }
-
-    return -1;
-  }
-
   _addPostToGlobalFeed(event: any) {
     // Prevent the post from navigating.
     event.stopPropagation();
@@ -568,9 +534,16 @@ export class FeedPostComponent implements OnInit {
       return;
     }
     event.stopPropagation();
-    this.modalService.show(PlaceBidModalComponent, {
+    const modalDetails = this.modalService.show(PlaceBidModalComponent, {
       class: "modal-dialog-centered modal-lg",
       initialState: { post: this.postContent },
+    });
+    const onHideEvent = modalDetails.onHide;
+    onHideEvent.subscribe((response) => {
+      if (response === "bid placed") {
+        this.getNFTEntries();
+        this.nftBidPlaced.emit();
+      }
     });
   }
 
@@ -584,5 +557,9 @@ export class FeedPostComponent implements OnInit {
   showmOfNNFTTooltip = false;
   toggleShowMOfNNFTTooltip(): void {
     this.showmOfNNFTTooltip = !this.showmOfNNFTTooltip;
+  }
+
+  getRouterLink(val: any): any {
+    return this.inTutorial ? [] : val;
   }
 }

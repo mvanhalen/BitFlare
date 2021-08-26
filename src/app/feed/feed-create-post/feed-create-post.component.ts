@@ -13,7 +13,7 @@ import { environment } from "../../../environments/environment";
   styleUrls: ["./feed-create-post.component.sass"],
 })
 export class FeedCreatePostComponent implements OnInit {
-  static SHOW_POST_LENGTH_WARNING_THRESHOLD = 260; // show warning at 260 characters
+  static SHOW_POST_LENGTH_WARNING_THRESHOLD = 515; // show warning at 515 characters
 
   EmbedUrlParserService = EmbedUrlParserService;
 
@@ -21,10 +21,10 @@ export class FeedCreatePostComponent implements OnInit {
   @Input() numberOfRowsInTextArea: number = 2;
   @Input() parentPost: PostEntryResponse = null;
   @Input() isQuote: boolean = false;
+  @Input() inTutorial: boolean = false;
 
   isComment: boolean;
 
-  @ViewChild("postImage") postImage;
   @ViewChild("autosize") autosize: CdkTextareaAutosize;
 
   randomMovieQuote = "";
@@ -70,6 +70,9 @@ export class FeedCreatePostComponent implements OnInit {
   ngOnInit() {
     this.isComment = !this.isQuote && !!this.parentPost;
     this._setRandomMovieQuote();
+    if (this.inTutorial) {
+      this.postInput = "It's time to CLOUT!";
+    }
   }
 
   onPaste(event: any): void {
@@ -172,7 +175,8 @@ export class FeedCreatePostComponent implements OnInit {
         // TODO: Should we have different values for creator basis points and stake multiple?
         // TODO: Also, it may not be reasonable to allow stake multiple to be set in the FE.
         false /*IsHidden*/,
-        this.globalVars.defaultFeeRateNanosPerKB /*MinFeeRateNanosPerKB*/
+        this.globalVars.defaultFeeRateNanosPerKB /*MinFeeRateNanosPerKB*/,
+        this.inTutorial,
       )
       .subscribe(
         (response) => {

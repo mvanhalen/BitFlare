@@ -1,11 +1,10 @@
 import { Component, OnInit, Input, OnChanges } from "@angular/core";
 import { GlobalVarsService } from "../../global-vars.service";
 import { ActivatedRoute, Router } from "@angular/router";
-import { BackendApiService } from "../../backend-api.service";
+import { BackendApiService, TutorialStatus } from "../../backend-api.service";
 import { SwalHelper } from "../../../lib/helpers/swal-helper";
 import { AppRoutingModule, RouteNames } from "../../app-routing.module";
 import { Title } from "@angular/platform-browser";
-import Swal from "sweetalert2";
 
 export type ProfileUpdates = {
   usernameUpdate: string;
@@ -27,6 +26,8 @@ export type ProfileUpdateErrors = {
 })
 export class UpdateProfileComponent implements OnInit, OnChanges {
   @Input() loggedInUser: any;
+  @Input() inTutorial: boolean = false;
+
   updateProfileBeingCalled: boolean = false;
   usernameInput: string;
   descriptionInput: string;
@@ -78,9 +79,9 @@ export class UpdateProfileComponent implements OnInit, OnChanges {
 
   founderRewardTooltip() {
     return (
-      "When someone purchases your coin, a percentage of each coin purchase " +
+      "When someone purchases your coin, a percentage of that " +
       "gets allocated to you as a founder reward.\n\n" +
-      "A value of 0% means that no new coins get allocated to you when someone buys, " +
+      "A value of 0% means you get no money when someone buys, " +
       "whereas a value of 100% means that nobody other than you can ever get coins because 100% of " +
       "every purchase will just go to you.\n\n" +
       "Setting this value too high will deter buyers from ever " +
@@ -94,15 +95,17 @@ export class UpdateProfileComponent implements OnInit, OnChanges {
       const profileEntryResponse = this.globalVars.loggedInUser.ProfileEntryResponse;
       this.usernameInput = profileEntryResponse?.Username || "";
       this.descriptionInput = profileEntryResponse?.Description || "";
-      this.backendApi
-        .GetSingleProfilePicture(
-          this.globalVars.localNode,
-          profileEntryResponse?.PublicKeyBase58Check,
-          this.globalVars.profileUpdateTimestamp ? `?${this.globalVars.profileUpdateTimestamp}` : ""
-        )
-        .subscribe((res) => {
-          this._readImageFileToProfilePicInput(res);
-        });
+      if (profileEntryResponse) {
+        this.backendApi
+          .GetSingleProfilePicture(
+            this.globalVars.localNode,
+            profileEntryResponse?.PublicKeyBase58Check,
+            this.globalVars.profileUpdateTimestamp ? `?${this.globalVars.profileUpdateTimestamp}` : ""
+          )
+          .subscribe((res) => {
+            this._readImageFileToProfilePicInput(res);
+          });
+      }
 
       // If they don't have CreatorBasisPoints set, use the default.
       if (this.globalVars.loggedInUser.ProfileEntryResponse?.CoinEntry?.CreatorBasisPoints != null) {
@@ -217,7 +220,7 @@ export class UpdateProfileComponent implements OnInit, OnChanges {
           },
           confirmButtonText: lowBalance ? "Buy $CLOUT" : null,
           cancelButtonText: lowBalance ? "Later" : null,
-          showCancelButton: lowBalance,
+          showCancelButton: !!lowBalance,
         }).then((res) => {
           if (lowBalance && res.isConfirmed) {
             this.router.navigate([RouteNames.BUY_BITCLOUT], { queryParamsHandling: "merge" });
@@ -231,6 +234,12 @@ export class UpdateProfileComponent implements OnInit, OnChanges {
     comp.globalVars.celebrate();
     comp.updateProfileBeingCalled = false;
     comp.profileUpdated = true;
+    if (comp.inTutorial) {
+      comp.router.navigate([RouteNames.TUTORIAL, RouteNames.INVEST, RouteNames.BUY_CREATOR], {
+        queryParamsHandling: "merge",
+      });
+      return;
+    }
     if (comp.globalVars.loggedInUser.UsersWhoHODLYouCount === 0) {
       SwalHelper.fire({
         target: comp.globalVars.getTargetComponentSelector(),

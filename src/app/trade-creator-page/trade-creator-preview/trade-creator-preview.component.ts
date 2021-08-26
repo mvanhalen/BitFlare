@@ -3,6 +3,8 @@ import { ActivatedRoute, Router } from "@angular/router";
 import { GlobalVarsService } from "../../global-vars.service";
 import { BackendApiService } from "../../backend-api.service";
 import { CreatorCoinTrade } from "../../../lib/trade-creator-page/creator-coin-trade";
+import { FollowService } from "../../../lib/services/follow/follow.service";
+import { of } from "rxjs";
 
 @Component({
   selector: "trade-creator-preview",
@@ -17,6 +19,7 @@ export class TradeCreatorPreviewComponent implements OnInit {
   CREATOR_COIN_RECEIVED_LESS_THAN_MIN_SLIPPAGE_ERROR = "RuleErrorCreatorCoinLessThanMinimumSetByUser";
 
   @Input() creatorCoinTrade: CreatorCoinTrade;
+  @Input() inTutorial: boolean = false;
 
   @Output() slippageError = new EventEmitter();
   @Output() tradeExecuted = new EventEmitter();
@@ -95,7 +98,8 @@ export class TradeCreatorPreviewComponent implements OnInit {
         minCreatorCoinExpectedNanos /*MinCreatorCoinExpectedNanos*/,
 
         this.appData.feeRateBitCloutPerKB * 1e9 /*feeRateNanosPerKB*/,
-        true
+        true,
+        this.inTutorial
       )
       .subscribe(
         (response) => {
@@ -121,8 +125,22 @@ export class TradeCreatorPreviewComponent implements OnInit {
           this.creatorCoinTrade.expectedCreatorCoinReturnedNanos = ExpectedCreatorCoinReturnedNanos || 0;
           this.creatorCoinTrade.expectedBitCloutReturnedNanos = ExpectedBitCloutReturnedNanos || 0;
 
-          // This will update the user's balance.
-          this.appData.updateEverything(response.TxnHashHex, this._creatorCoinSuccess, this._creatorCoinFailure, this);
+          const observable =
+            this.creatorCoinTrade.followCreator &&
+            !this.followService._isLoggedInUserFollowing(this.creatorCoinTrade.creatorProfile.PublicKeyBase58Check) &&
+            this.appData.loggedInUser.PublicKeyBase58Check !==
+              this.creatorCoinTrade.creatorProfile.PublicKeyBase58Check &&
+            this.creatorCoinTrade.tradeType === CreatorCoinTrade.BUY_VERB
+              ? this.followService._toggleFollow(true, this.creatorCoinTrade.creatorProfile.PublicKeyBase58Check)
+              : of(null).subscribe();
+          observable.add(() => {
+            this.appData.updateEverything(
+              response.TxnHashHex,
+              this._creatorCoinSuccess,
+              this._creatorCoinFailure,
+              this
+            );
+          });
         },
         (response) => {
           this._handleRequestErrors(response);
@@ -219,7 +237,8 @@ export class TradeCreatorPreviewComponent implements OnInit {
     private globalVars: GlobalVarsService,
     private route: ActivatedRoute,
     private _router: Router,
-    private backendApi: BackendApiService
+    private backendApi: BackendApiService,
+    private followService: FollowService
   ) {
     this.appData = globalVars;
     this.router = _router;
