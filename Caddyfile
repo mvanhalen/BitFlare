@@ -34,7 +34,7 @@ header @html Content-Security-Policy "
     pulse.bitclout.com
     api.bitpop.dev
     localhost:*
-    test.nftz.zone:*
+    *.nftz.zone:*
     explorer.bitclout.com:*
     https://api.blockchain.com/ticker
     https://api.blockchain.com/mempool/fees
